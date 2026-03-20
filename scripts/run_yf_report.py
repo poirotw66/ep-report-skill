@@ -24,6 +24,11 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from ticker_mapping import build_unresolved_report, resolve_tickers_from_transcript, validate_tickers
 
+try:
+    import yaml  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    yaml = None  # type: ignore
+
 
 def _safe_mkdir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
@@ -220,23 +225,83 @@ def format_pct_abs(x: float) -> str:
 
 
 def ticker_to_label(ticker: str) -> str:
-    mapping: Dict[str, str] = {
-        "TSM": "台積電 TSMC (TSM)",
-        "TSLA": "特斯拉 Tesla (TSLA)",
-        "NVDA": "輝達 NVIDIA (NVDA)",
-        "AAPL": "蘋果 Apple (AAPL)",
-        "MSFT": "微軟 Microsoft (MSFT)",
-        "ORCL": "甲骨文 Oracle (ORCL)",
-        "AMZN": "亞馬遜 Amazon (AMZN)",
-        "GOOGL": "Google (GOOGL)",
-        "AMD": "超微 AMD (AMD)",
-        "005930.KS": "三星 Samsung (005930.KS)",
-        "MU": "美光 Micron (MU)",
-        "2345.TW": "華邦 Winbond (2345.TW)",
-        "2454.TW": "聯發科 MediaTek (2454.TW)",
-        "AVGO": "Broadcom (AVGO)",
-    }
-    return mapping.get(ticker, ticker)
+    config = _load_report_config()
+    return config.ticker_labels.get(ticker, ticker)
+
+
+@dataclass(frozen=True)
+class ReportThemeKeyword:
+    theme: str
+    keywords: List[str]
+
+
+@dataclass(frozen=True)
+class ReportConfig:
+    ticker_labels: Dict[str, str]
+    theme_keywords: List[ReportThemeKeyword]
+    theme_to_ticker_snippet: Dict[str, List[str]]
+
+
+_REPORT_CONFIG_CACHE: Optional[ReportConfig] = None
+
+
+def _load_report_config() -> ReportConfig:
+    """
+    Load theme/label configuration from YAML to avoid hardcoded report text.
+    """
+
+    global _REPORT_CONFIG_CACHE
+    if _REPORT_CONFIG_CACHE is not None:
+        return _REPORT_CONFIG_CACHE
+
+    if yaml is None:
+        raise ModuleNotFoundError(
+            "PyYAML is required to load report_config.yaml. Please install it (pip install pyyaml)."
+        )
+
+    config_path = Path(__file__).resolve().parent / "report_config.yaml"
+    with open(config_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    if not isinstance(data, dict):
+        raise ValueError("report_config.yaml must parse into a dict at the top level.")
+
+    ticker_labels_raw = data.get("ticker_labels", {})
+    if not isinstance(ticker_labels_raw, dict):
+        raise ValueError("report_config.yaml: 'ticker_labels' must be a dict.")
+
+    theme_keywords_raw = data.get("theme_keywords", [])
+    if not isinstance(theme_keywords_raw, list):
+        raise ValueError("report_config.yaml: 'theme_keywords' must be a list.")
+
+    theme_keywords: List[ReportThemeKeyword] = []
+    for item in theme_keywords_raw:
+        if not isinstance(item, dict):
+            continue
+        theme = item.get("theme")
+        keywords = item.get("keywords")
+        if not isinstance(theme, str) or not isinstance(keywords, list):
+            continue
+        keyword_list = [k for k in keywords if isinstance(k, str)]
+        theme_keywords.append(ReportThemeKeyword(theme=theme, keywords=keyword_list))
+
+    theme_to_snippet_raw = data.get("theme_to_ticker_snippet", {})
+    if not isinstance(theme_to_snippet_raw, dict):
+        raise ValueError("report_config.yaml: 'theme_to_ticker_snippet' must be a dict.")
+
+    theme_to_ticker_snippet: Dict[str, List[str]] = {}
+    for ticker, wants in theme_to_snippet_raw.items():
+        if not isinstance(ticker, str) or not isinstance(wants, list):
+            continue
+        theme_to_ticker_snippet[ticker] = [w for w in wants if isinstance(w, str)]
+
+    _REPORT_CONFIG_CACHE = ReportConfig(
+        ticker_labels={str(k): str(v) for k, v in ticker_labels_raw.items()},
+        theme_keywords=theme_keywords,
+        theme_to_ticker_snippet=theme_to_ticker_snippet,
+    )
+
+    return _REPORT_CONFIG_CACHE
 
 
 def extract_theme_keywords(transcript_text: str) -> List[str]:
@@ -245,28 +310,21 @@ def extract_theme_keywords(transcript_text: str) -> List[str]:
     """
 
     transcript_norm = transcript_text.lower().replace("invidia", "nvidia")
+    config = _load_report_config()
 
-    themes: List[str] = []
-    checks: List[Tuple[str, List[str]]] = [
-        ("AI工廠與平台化", ["nvidia", "gtc", "spectrum", "lpu", "gpu", "token", "ai factory", "workshop"]),
-        ("先進製程與供應鏈", ["tsmc", "台積電", "samsung", "三星", "order", "supply"]),
-        ("事件驅動：Apple發表與CPO節奏", ["apple", "cpo", "發表", "earnings", "財報"]),
-        ("記憶體與計算記憶體", ["micron", "美光", "winbond", "華邦", "cube", "sram", "hbm", "memory computing", "unchip"]),
-        ("預期落差與追價風險", ["sellside", "上修", "priced", "eps", "股價"]),
-        ("OpenAI/雲端與企業軟體題材", ["open ai", "openai", "oracle", "microsoft", "google", "azure"]),
-    ]
-
-    for theme, keywords in checks:
-        if any(k in transcript_norm.replace(" ", "") for k in keywords):
-            themes.append(theme)
+    matched_themes: List[str] = []
+    transcript_compact = transcript_norm.replace(" ", "")
+    for rule in config.theme_keywords:
+        if any(k in transcript_compact for k in rule.keywords):
+            matched_themes.append(rule.theme)
 
     # Deduplicate while preserving order
-    seen: Set[str] = set()
+    seen: set[str] = set()
     out: List[str] = []
-    for t in themes:
-        if t not in seen:
-            out.append(t)
-            seen.add(t)
+    for theme in matched_themes:
+        if theme not in seen:
+            out.append(theme)
+            seen.add(theme)
     return out
 
 
@@ -275,23 +333,8 @@ def theme_to_ticker_snippet(ticker: str, themes: List[str]) -> str:
     Map themes to ticker for report narrative. This is heuristic.
     """
 
-    mapping: Dict[str, List[str]] = {
-        "TSM": ["先進製程與供應鏈"],
-        "NVDA": ["AI工廠與平台化"],
-        "AMD": ["AI工廠與平台化"],
-        "AAPL": ["事件驅動：Apple發表與CPO節奏"],
-        "MSFT": ["OpenAI/雲端與企業軟體題材", "預期落差與追價風險"],
-        "ORCL": ["OpenAI/雲端與企業軟體題材"],
-        "AMZN": ["AI工廠與平台化", "預期落差與追價風險"],
-        "GOOGL": ["OpenAI/雲端與企業軟體題材"],
-        "MU": ["記憶體與計算記憶體"],
-        "2345.TW": ["記憶體與計算記憶體"],
-        "2454.TW": ["記憶體與計算記憶體", "先進製程與供應鏈"],
-        "005930.KS": ["記憶體與計算記憶體", "先進製程與供應鏈"],
-        "AVGO": ["記憶體與計算記憶體", "AI工廠與平台化"],
-        "TSLA": ["先進製程與供應鏈"],
-    }
-    wants = mapping.get(ticker, [])
+    config = _load_report_config()
+    wants = config.theme_to_ticker_snippet.get(ticker, [])
     selected = [w for w in wants if w in themes]
     if not selected:
         selected = wants[:2]

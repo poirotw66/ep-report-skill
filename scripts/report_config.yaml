@@ -1,0 +1,46 @@
+ticker_labels:
+  TSM: "台積電 TSMC (TSM)"
+  TSLA: "特斯拉 Tesla (TSLA)"
+  NVDA: "輝達 NVIDIA (NVDA)"
+  AAPL: "蘋果 Apple (AAPL)"
+  MSFT: "微軟 Microsoft (MSFT)"
+  ORCL: "甲骨文 Oracle (ORCL)"
+  AMZN: "亞馬遜 Amazon (AMZN)"
+  GOOGL: "Google (GOOGL)"
+  AMD: "超微 AMD (AMD)"
+  "005930.KS": "三星 Samsung (005930.KS)"
+  MU: "美光 Micron (MU)"
+  "2345.TW": "華邦 Winbond (2345.TW)"
+  "2454.TW": "聯發科 MediaTek (2454.TW)"
+  AVGO: "Broadcom (AVGO)"
+
+theme_keywords:
+  - theme: "AI工廠與平台化"
+    keywords: ["nvidia", "gtc", "spectrum", "lpu", "gpu", "token", "ai factory", "workshop"]
+  - theme: "先進製程與供應鏈"
+    keywords: ["tsmc", "台積電", "samsung", "三星", "order", "supply"]
+  - theme: "事件驅動：Apple發表與CPO節奏"
+    keywords: ["apple", "cpo", "發表", "earnings", "財報"]
+  - theme: "記憶體與計算記憶體"
+    keywords: ["micron", "美光", "winbond", "華邦", "cube", "sram", "hbm", "memory computing", "unchip"]
+  - theme: "預期落差與追價風險"
+    keywords: ["sellside", "上修", "priced", "eps", "股價"]
+  - theme: "OpenAI/雲端與企業軟體題材"
+    keywords: ["open ai", "openai", "oracle", "microsoft", "google", "azure"]
+
+theme_to_ticker_snippet:
+  TSM: ["先進製程與供應鏈"]
+  NVDA: ["AI工廠與平台化"]
+  AMD: ["AI工廠與平台化"]
+  AAPL: ["事件驅動：Apple發表與CPO節奏"]
+  MSFT: ["OpenAI/雲端與企業軟體題材", "預期落差與追價風險"]
+  ORCL: ["OpenAI/雲端與企業軟體題材"]
+  AMZN: ["AI工廠與平台化", "預期落差與追價風險"]
+  GOOGL: ["OpenAI/雲端與企業軟體題材"]
+  MU: ["記憶體與計算記憶體"]
+  "2345.TW": ["記憶體與計算記憶體"]
+  "2454.TW": ["記憶體與計算記憶體", "先進製程與供應鏈"]
+  "005930.KS": ["記憶體與計算記憶體", "先進製程與供應鏈"]
+  AVGO: ["記憶體與計算記憶體", "AI工廠與平台化"]
+  TSLA: ["先進製程與供應鏈"]
+
