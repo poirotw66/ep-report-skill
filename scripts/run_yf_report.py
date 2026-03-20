@@ -8,7 +8,6 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import pandas as pd
@@ -82,82 +81,19 @@ def _select_close_column(df: pd.DataFrame) -> str:
 
 
 def fetch_transcript_text(
-    youtube_url: Optional[str],
     transcript_md_path: Optional[str],
-    language_code: Optional[str],
 ) -> str:
     """
-    Get transcript text.
-
-    Priority:
-    1) local transcript_md_path if provided
-    2) YouTube URL via youtube-transcript-api
+    Get transcript text (local file only).
     """
 
-    if transcript_md_path:
-        md_path = Path(transcript_md_path).expanduser().resolve()
-        return md_path.read_text(encoding="utf-8")
+    if not transcript_md_path:
+        raise ValueError(
+            "transcript_md_path is required. youtube_url transcript extraction is disabled in this skill."
+        )
 
-    if not youtube_url:
-        raise ValueError("Either transcript_md_path or youtube_url must be provided.")
-
-    def extract_youtube_video_id(url: str) -> str:
-        """
-        Extract YouTube video_id from common URL formats.
-        """
-
-        parsed = urlparse(url)
-
-        # Typical: https://www.youtube.com/watch?v=VIDEO_ID
-        qs = parse_qs(parsed.query)
-        vid = qs.get("v", [None])[0]
-        if vid:
-            return vid
-
-        # Short link: https://youtu.be/VIDEO_ID
-        if parsed.netloc.endswith("youtu.be"):
-            # path is like /VIDEO_ID
-            candidate = parsed.path.lstrip("/")
-            if candidate:
-                return candidate
-
-        # Fallback: regex for safety.
-        match = re.search(r"(?:v=|youtu\.be/)([A-Za-z0-9_-]{6,})", url)
-        if match:
-            return match.group(1)
-
-        raise ValueError(f"Unable to extract YouTube video_id from url: {url}")
-
-    # Import inside function to keep dependencies optional.
-    try:
-        from youtube_transcript_api import YouTubeTranscriptApi  # type: ignore
-    except ModuleNotFoundError as exc:
-        raise ModuleNotFoundError(
-            "Missing dependency 'youtube-transcript-api'. Install it with: pip install youtube-transcript-api"
-        ) from exc
-
-    # Try user language first, then fallbacks.
-    langs = []
-    if language_code:
-        langs.append(language_code)
-    langs.extend(["zh-TW", "zh", "en"])
-
-    last_exc: Optional[Exception] = None
-    for lang in langs:
-        try:
-            video_id = extract_youtube_video_id(youtube_url)
-            api = YouTubeTranscriptApi()
-            fetched = api.fetch(video_id=video_id, languages=[lang], preserve_formatting=False)
-            # fetched items: dict-like objects with a "text" field
-            text = " ".join(item.get("text", "") for item in fetched)
-            text = text.strip()
-            if text:
-                return text
-        except Exception as exc:  # pragma: no cover
-            last_exc = exc
-            continue
-
-    raise RuntimeError(f"Unable to fetch transcript from YouTube. Last error: {last_exc}")
+    md_path = Path(transcript_md_path).expanduser().resolve()
+    return md_path.read_text(encoding="utf-8")
 
 
 @dataclass(frozen=True)
@@ -450,7 +386,7 @@ def generate_report_md(
     lines.append("")
 
     lines.append("## Data scope")
-    lines.append(f"- 節目逐字稿：由 skill 取得（來源：YouTube transcript 或本地 transcript）。")
+    lines.append(f"- 節目逐字稿：由 skill 取得（來源：本地 transcript）。")
     lines.append(f"- 行情週期：近 {period}（日頻 1d，收盤價）")
     lines.append(f"- 圖表來源：`output_dir/*.svg` 與 `{episode_prefix}-market-compare-normalized.svg`.")
     lines.append("")
@@ -534,6 +470,9 @@ def main() -> None:
     episode_prefix = args.episode_prefix.strip() or None
     language_code = args.language_code.strip() or None
 
+    if transcript_md_path is None:
+        raise ValueError("transcript_md_path is required. youtube_url transcript extraction is disabled in this skill.")
+
     # Default mapping file
     if args.ticker_map_path:
         ticker_map_path = args.ticker_map_path
@@ -559,9 +498,7 @@ def main() -> None:
 
     # 1) transcript text
     transcript_text = fetch_transcript_text(
-        youtube_url=youtube_url,
         transcript_md_path=transcript_md_path,
-        language_code=language_code,
     )
 
     # 2) resolve tickers from transcript

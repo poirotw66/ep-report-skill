@@ -8,7 +8,7 @@ This skill generates:
 
 ## How tickers are extracted
 
-The agent takes a transcript (from `youtube_url` or `transcript_md_path`), normalizes it, and then resolves tickers using:
+The agent takes a local transcript from `transcript_md_path`, normalizes it, and then resolves tickers using:
 
 - `scripts/ticker_map.yaml`
 - `scripts/ticker_mapping.py` (pattern matching + optional aliases)
@@ -44,9 +44,6 @@ The runtime script `scripts/run_yf_report.py` needs:
 - `pandas`
 - `matplotlib`
 - `PyYAML` (for reading `ticker_map.yaml`)
-- `youtube-transcript-api` (only when using `youtube_url`)
-
-If `youtube-transcript-api` is missing and you only provide `transcript_md_path`, the skill still works without it.
 
 ## Local execution (debug)
 
@@ -60,14 +57,5 @@ python scripts/run_yf_report.py \
   --interval 1d
 ```
 
-Example (using YouTube URL):
-
-```bash
-python scripts/run_yf_report.py \
-  --youtube_url "https://www.youtube.com/watch?v=..." \
-  --episode_prefix ep645 \
-  --output_dir /path/to/output/ep645 \
-  --period 3mo \
-  --interval 1d
-```
+Note: YouTube URL transcript extraction is disabled; provide `--transcript_md_path` only.
 
