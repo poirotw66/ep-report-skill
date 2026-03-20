@@ -3,3 +3,7 @@ __pycache__/
 ep644.md
 ep644_new/
 ep644_new2/
+output/
+.venv/
+.env
+.gitignore

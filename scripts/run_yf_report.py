@@ -8,12 +8,13 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import pandas as pd
 import yfinance as yf
 
 import matplotlib
+import matplotlib.dates as mdates
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -23,6 +24,12 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from ticker_mapping import build_unresolved_report, resolve_tickers_from_transcript, validate_tickers
+from llm_gemini_report import (
+    GeminiConfig,
+    GeminiReportWriter,
+    get_gemini_api_key,
+    load_dotenv_if_present,
+)
 
 try:
     import yaml  # type: ignore
@@ -216,12 +223,87 @@ def format_money(x: float) -> str:
     return f"{x:,.2f}"
 
 
+def format_period_cn(period: str) -> str:
+    """
+    Convert yfinance-style period (e.g. "3mo") into Chinese (e.g. "3個月").
+    """
+    match = re.match(r"^(\d+)mo$", period.strip(), flags=re.IGNORECASE)
+    if match:
+        return f"{int(match.group(1))}個月"
+    return period
+
+
 def format_pct(x: float) -> str:
     return f"{x:+.2f}%"
 
 
 def format_pct_abs(x: float) -> str:
     return f"{x:.2f}%"
+
+
+def _risk_band_from_max_drawdown(max_drawdown_pct: float) -> str:
+    """
+    Classify risk using max drawdown magnitude.
+    """
+    if max_drawdown_pct <= -25.0:
+        return "風險明顯偏高"
+    if max_drawdown_pct <= -15.0:
+        return "回撤中等"
+    return "回撤相對受控"
+
+
+def _volatility_band_from_3m_volatility(volatility_3m: float) -> str:
+    """
+    Classify volatility band for short-term narrative.
+    """
+    if volatility_3m >= 4.0:
+        return "波動偏高"
+    if volatility_3m >= 2.5:
+        return "波動中等"
+    return "波動相對溫和"
+
+
+def _theme_focus_phrase(theme_snippet: str) -> str:
+    """
+    Convert a short theme snippet into a more explainable focus phrase.
+    """
+    if "先進製程與供應鏈" in theme_snippet:
+        return "供應鏈與資本支出（產能/節奏）"
+    if "AI工廠與平台化" in theme_snippet:
+        return "模型擴張與設備/平台需求敘事"
+    if "記憶體與計算記憶體" in theme_snippet:
+        return "記憶體供需與計算效率（如 HBM 路線）"
+    if "事件驅動：Apple發表與CPO節奏" in theme_snippet:
+        return "產品發表後的資本支出與供應鏈反應"
+    if "預期落差與追價風險" in theme_snippet:
+        return "估值與 EPS/上修路徑的風險偏好"
+    if "OpenAI/雲端與企業軟體題材" in theme_snippet:
+        return "雲端成長與企業軟體續航敘事"
+    return "節目敘事主軸"
+
+
+def _build_per_ticker_interpretation(
+    period: str,
+    theme_snippet: str,
+    metrics: MarketMetrics,
+) -> str:
+    """
+    Build a conclusion-like interpretation sentence for one ticker.
+    """
+    risk_band = _risk_band_from_max_drawdown(metrics.max_drawdown_pct)
+    volatility_band = _volatility_band_from_3m_volatility(metrics.volatility_3m)
+    focus_phrase = _theme_focus_phrase(theme_snippet)
+
+    if metrics.total_return_pct >= 0:
+        return (
+            f"在「{theme_snippet}」的敘事脈絡下，價格近 {period} 呈現正向定價；"
+            f"其中 {focus_phrase} 被市場階段性接受，但 {risk_band}、{volatility_band} 也意味著仍存在驗證/風險溢酬調整。"
+        )
+
+    return (
+        f"在「{theme_snippet}」的敘事脈絡下，價格近 {period} 走弱；"
+        f"對 {focus_phrase} 的短期定價仍偏保守，且 {risk_band}、{volatility_band} 反映出市場尚在消化落差與不確定性。"
+    )
 
 
 def ticker_to_label(ticker: str) -> str:
@@ -343,11 +425,18 @@ def theme_to_ticker_snippet(ticker: str, themes: List[str]) -> str:
 
 def plot_ticker_close_svg(output_dir: Path, ticker: str, close: pd.Series, period: str) -> None:
     plt.figure(figsize=(6.2, 3.6), dpi=150)
+    ax = plt.gca()
     plt.plot(close.index, close.values, linewidth=1.6)
     plt.title(f"{ticker} - {period} Close", fontsize=12)
     plt.xlabel("Date")
     plt.ylabel("Price")
     plt.grid(True, alpha=0.25)
+
+    # Reduce x-axis label crowding for dense date ranges.
+    ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=4, maxticks=8))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=8)
+
     plt.tight_layout()
     out_path = output_dir / f"{ticker}.svg"
     plt.savefig(out_path, format="svg")
@@ -369,6 +458,7 @@ def plot_normalized_comparison_svg(
         return
 
     plt.figure(figsize=(7.8, 4.8), dpi=160)
+    ax = plt.gca()
     for ticker, s in series_by_ticker.items():
         s2 = s.loc[common_index]
         if s2.empty:
@@ -382,6 +472,12 @@ def plot_normalized_comparison_svg(
     plt.ylabel("Index (Start=100)")
     plt.grid(True, alpha=0.25)
     plt.legend(fontsize=8, ncol=2)
+
+    # Reduce x-axis label crowding for dense date ranges.
+    ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=4, maxticks=8))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=8)
+
     plt.tight_layout()
     out_path = output_dir / f"{episode_prefix}-market-compare-normalized.svg"
     plt.savefig(out_path, format="svg")
@@ -398,6 +494,11 @@ def generate_report_md(
     metrics_by_ticker: Dict[str, MarketMetrics],
     period: str,
     unresolved: List[str],
+    use_llm: bool,
+    llm_model: str,
+    llm_temperature: float,
+    llm_max_output_tokens: int,
+    llm_transcript_max_chars: int,
 ) -> None:
     themes = extract_theme_keywords(transcript_text)
 
@@ -406,11 +507,36 @@ def generate_report_md(
 
     sorted_metrics = sorted(metrics_by_ticker.values(), key=sort_key, reverse=True)
 
+    # Prepare LLM writer (best effort). If something fails, the report falls back to deterministic text.
+    llm_writer: Optional[GeminiReportWriter] = None
+    transcript_for_llm = transcript_text
+    if len(transcript_for_llm) > llm_transcript_max_chars:
+        transcript_for_llm = transcript_for_llm[:llm_transcript_max_chars]
+
+    if use_llm:
+        api_key = get_gemini_api_key()
+        if api_key:
+            try:
+                llm_writer = GeminiReportWriter(
+                    output_dir=output_dir,
+                    config=GeminiConfig(
+                        model=llm_model,
+                        temperature=llm_temperature,
+                        max_output_tokens=llm_max_output_tokens,
+                    ),
+                    api_key=api_key,
+                )
+            except Exception:
+                llm_writer = None
+
+    # Print LLM errors at most a few times to avoid flooding console output.
+    llm_error_printed = 0
+
     lines: List[str] = []
     lines.append(f"# {episode_prefix} 走勢與觀點綜合報告")
     lines.append("")
     lines.append(
-        f"本報告把節目逐字稿（`{report_md_path.name}` 對應上游檔案來源）中反覆出現的投資框架，與 `Yahoo Finance` 近 {period} 行情走勢（SVG）做對照，用於檢視「敘事是否被市場定價」與「事件後的落差」可能如何體現在價格上。"
+        f"本報告把節目逐字稿（`{report_md_path.name}` 對應上游檔案來源）中反覆出現的投資框架，與 `Yahoo Finance` 近{format_period_cn(period)}行情走勢（SVG）做對照，用於檢視「敘事是否被市場定價」與「事件後的落差」可能如何體現在價格上。"
     )
     lines.append("")
 
@@ -419,18 +545,125 @@ def generate_report_md(
     if sorted_metrics:
         top = sorted_metrics[:3]
         bottom = sorted_metrics[-3:]
-        top_labels = ", ".join([m.label.split(" (")[0] for m in top])
-        bottom_labels = ", ".join([m.label.split(" (")[0] for m in bottom])
-        lines.append(f"- 近 {period} 報酬表現靠前：{top_labels}。")
-        lines.append(f"- 近 {period} 相對落後：{bottom_labels}。")
-        lines.append("- 節目強調的「預期落差、後續驗證、供應鏈節奏」更適合用價格落點是否同步來追蹤。")
+        if llm_writer:
+            try:
+                assets_payload = [
+                    {
+                        "ticker_id": m.ticker,
+                        "name": m.label,
+                        "total_return_pct": m.total_return_pct,
+                        "max_drawdown_pct": m.max_drawdown_pct,
+                        "volatility_3m": m.volatility_3m,
+                        "start_price": m.start_price,
+                        "end_price": m.end_price,
+                    }
+                    for m in sorted_metrics
+                ]
+                market_summary_payload = {"assets": assets_payload}
+
+                llm_exec = llm_writer.generate_executive_summary(
+                    episode_prefix=episode_prefix,
+                    period=period,
+                    themes=themes,
+                    transcript_text=transcript_for_llm,
+                    market_metrics_summary=market_summary_payload,
+                )
+
+                if llm_exec:
+                    market_sentiment = llm_exec.get("market_sentiment")
+                    if isinstance(market_sentiment, dict):
+                        trend_phase = market_sentiment.get("trend_phase")
+                        risk_score = market_sentiment.get("risk_score")
+                        if isinstance(trend_phase, str) and trend_phase.strip():
+                            lines.append(f"**趨勢階段：** {trend_phase.strip()}")
+                        if isinstance(risk_score, (int, float)):
+                            lines.append(f"**風險分數：** {risk_score}/10。")
+
+                        inflection_analysis = market_sentiment.get("inflection_analysis")
+                        if isinstance(inflection_analysis, dict):
+                            leading_indicators = inflection_analysis.get("leading_indicators")
+                            lagging_indicators = inflection_analysis.get("lagging_indicators")
+                            trigger_condition = inflection_analysis.get("trigger_condition")
+                            if isinstance(leading_indicators, str) and leading_indicators.strip():
+                                lines.append(f"**領先指標：** {leading_indicators.strip()}")
+                            if isinstance(lagging_indicators, str) and lagging_indicators.strip():
+                                lines.append(f"**滯後指標：** {lagging_indicators.strip()}")
+                            if isinstance(trigger_condition, str) and trigger_condition.strip():
+                                lines.append(f"**觸發條件：** {trigger_condition.strip()}")
+
+                    asset_analysis = llm_exec.get("asset_analysis")
+                    if isinstance(asset_analysis, list) and asset_analysis:
+                        scored_assets: List[Tuple[float, Dict[str, Any]]] = []
+                        for item in asset_analysis:
+                            if not isinstance(item, dict):
+                                continue
+                            correlation_analysis = item.get("correlation_analysis")
+                            score_val: Optional[float] = None
+                            if isinstance(correlation_analysis, dict):
+                                raw_score = correlation_analysis.get("score")
+                                if isinstance(raw_score, (int, float)):
+                                    score_val = float(raw_score)
+                            if score_val is None:
+                                continue
+                            scored_assets.append((score_val, item))
+
+                        if scored_assets:
+                            scored_assets.sort(key=lambda x: x[0], reverse=True)
+                            top_assets = [pair[1] for pair in scored_assets[:3]]
+                        else:
+                            top_assets = asset_analysis[:3]
+
+                        for item in top_assets:
+                            if not isinstance(item, dict):
+                                continue
+                            name = item.get("name")
+                            temporal_role = item.get("temporal_role")
+                            action_plan = item.get("action_plan")
+                            correlation_analysis = item.get("correlation_analysis")
+                            score_str = None
+                            classification = None
+                            logic = None
+                            if isinstance(correlation_analysis, dict):
+                                raw_score = correlation_analysis.get("score")
+                                if isinstance(raw_score, (int, float)):
+                                    score_str = f"{raw_score}"
+                                classification = correlation_analysis.get("classification")
+                                logic = correlation_analysis.get("logic")
+
+                            if isinstance(name, str) and name.strip() and isinstance(temporal_role, str) and temporal_role.strip():
+                                lines.append("")
+                                lines.append(f"**{name.strip()}**")
+                                lines.append(
+                                    f"敘事得分：{score_str or '?'}（{classification or '—'}）；時序角色：{temporal_role.strip()}"
+                                )
+                                if isinstance(action_plan, str) and action_plan.strip():
+                                    lines.append(f"操作建議：{action_plan.strip()}")
+                                if isinstance(logic, str) and logic.strip():
+                                    lines.append(f"邏輯：{logic.strip()}")
+                else:
+                    raise RuntimeError("Gemini executive summary returned no payload.")
+            except Exception as exc:
+                if llm_error_printed == 0 and llm_writer and llm_writer.last_error:
+                    print(f"[LLM] Executive summary failed: {llm_writer.last_error}")
+                    llm_error_printed = 1
+                top_labels = ", ".join([m.label.split(" (")[0] for m in top])
+                bottom_labels = ", ".join([m.label.split(" (")[0] for m in bottom])
+                lines.append(f"- 近 {period} 報酬表現靠前：{top_labels}。")
+                lines.append(f"- 近 {period} 相對落後：{bottom_labels}。")
+                lines.append("- 節目強調的「預期落差、後續驗證、供應鏈節奏」更適合用價格落點是否同步來追蹤。")
+        else:
+            top_labels = ", ".join([m.label.split(" (")[0] for m in top])
+            bottom_labels = ", ".join([m.label.split(" (")[0] for m in bottom])
+            lines.append(f"- 近 {period} 報酬表現靠前：{top_labels}。")
+            lines.append(f"- 近 {period} 相對落後：{bottom_labels}。")
+            lines.append("- 節目強調的「預期落差、後續驗證、供應鏈節奏」更適合用價格落點是否同步來追蹤。")
     else:
         lines.append("- 未能取得足夠行情資料，報告只包含部分內容。")
     lines.append("")
 
     lines.append("## Data scope")
     lines.append(f"- 節目逐字稿：由 skill 取得（來源：本地 transcript）。")
-    lines.append(f"- 行情週期：近 {period}（日頻 1d，收盤價）")
+    lines.append(f"- 行情週期：近{format_period_cn(period)}（日頻 1d，收盤價）")
     lines.append(f"- 圖表來源：`output_dir/*.svg` 與 `{episode_prefix}-market-compare-normalized.svg`.")
     lines.append("")
 
@@ -453,6 +686,88 @@ def generate_report_md(
         )
     lines.append("")
 
+    if llm_writer:
+        try:
+            assets_payload = [
+                {
+                    "ticker_id": m.ticker,
+                    "name": m.label,
+                    "total_return_pct": m.total_return_pct,
+                    "max_drawdown_pct": m.max_drawdown_pct,
+                    "volatility_3m": m.volatility_3m,
+                    "start_price": m.start_price,
+                    "end_price": m.end_price,
+                }
+                for m in sorted_metrics
+            ]
+
+            market_summary: Dict[str, Any] = {"assets": assets_payload, "ticker_count": {"value": len(sorted_metrics)}}
+            overview_payload = llm_writer.generate_market_overview_narrative(
+                period=period,
+                themes=themes,
+                transcript_text=transcript_for_llm,
+                market_metrics_summary=market_summary,
+            )
+            if isinstance(overview_payload, dict):
+                market_sentiment = overview_payload.get("market_sentiment")
+                if isinstance(market_sentiment, dict):
+                    trend_phase = market_sentiment.get("trend_phase")
+                    risk_score = market_sentiment.get("risk_score")
+                    inflection_analysis = market_sentiment.get("inflection_analysis")
+                    if isinstance(trend_phase, str) and trend_phase.strip():
+                            lines.append(f"**市場解讀：** 趨勢階段 {trend_phase.strip()}")
+                    if isinstance(risk_score, (int, float)):
+                            lines.append(f"**風險分數：** {risk_score}/10。")
+                    if isinstance(inflection_analysis, dict):
+                        leading_indicators = inflection_analysis.get("leading_indicators")
+                        lagging_indicators = inflection_analysis.get("lagging_indicators")
+                        trigger_condition = inflection_analysis.get("trigger_condition")
+                        if isinstance(leading_indicators, str) and leading_indicators.strip():
+                                lines.append(f"**領先指標：** {leading_indicators.strip()}")
+                        if isinstance(lagging_indicators, str) and lagging_indicators.strip():
+                                lines.append(f"**滯後指標：** {lagging_indicators.strip()}")
+                        if isinstance(trigger_condition, str) and trigger_condition.strip():
+                                lines.append(f"**觸發條件：** {trigger_condition.strip()}")
+
+                asset_analysis = overview_payload.get("asset_analysis")
+                if isinstance(asset_analysis, list) and asset_analysis:
+                    for item in asset_analysis:
+                        if not isinstance(item, dict):
+                            continue
+                        name = item.get("name")
+                        temporal_role = item.get("temporal_role")
+                        action_plan = item.get("action_plan")
+                        correlation_analysis = item.get("correlation_analysis")
+                        score_val = None
+                        classification = None
+                        logic = None
+                        if isinstance(correlation_analysis, dict):
+                            raw_score = correlation_analysis.get("score")
+                            if isinstance(raw_score, (int, float)):
+                                score_val = float(raw_score)
+                            classification = correlation_analysis.get("classification")
+                            logic = correlation_analysis.get("logic")
+                        if isinstance(name, str) and name.strip() and isinstance(temporal_role, str) and temporal_role.strip():
+                            score_text = f"{score_val:.2f}" if isinstance(score_val, float) else "?"
+                            cls_text = classification.strip() if isinstance(classification, str) and classification.strip() else "—"
+                            action_text = action_plan.strip() if isinstance(action_plan, str) and action_plan.strip() else ""
+                            logic_text = logic.strip() if isinstance(logic, str) and logic.strip() else ""
+                            lines.append("")
+                            lines.append(f"**{name.strip()}**")
+                            lines.append(
+                                f"敘事得分：{score_text}（{cls_text}）；時序角色：{temporal_role.strip()}"
+                            )
+                            if action_text:
+                                lines.append(f"操作建議：{action_text}")
+                            if logic_text:
+                                lines.append(f"邏輯：{logic_text}")
+                lines.append("")
+            elif llm_error_printed == 0 and llm_writer and llm_writer.last_error:
+                print(f"[LLM] Market overview narrative failed (first occurrence): {llm_writer.last_error}")
+                llm_error_printed = 1
+        except Exception:
+            pass
+
     normalized_chart_name = f"{episode_prefix}-market-compare-normalized.svg"
     normalized_chart_path = output_dir / normalized_chart_name
     if normalized_chart_path.exists():
@@ -467,13 +782,54 @@ def generate_report_md(
     for m in sorted_metrics:
         lines.append(f"### {m.label}")
         lines.append("")
-        lines.append(f"- 近 {period} 報酬：{format_pct_abs(m.total_return_pct)}；最大回撤：{format_pct_abs(m.max_drawdown_pct)}。")
-        lines.append(f"- 與節目觀點的對照：{theme_to_ticker_snippet(m.ticker, themes)}。")
-        # Short inference (heuristic)
-        if m.total_return_pct >= 0:
-            lines.append("- 可能代表市場在這段期間更願意把「後續驗證/供需節奏」反映到價格，或風險溢酬下降。")
+        theme_snippet = theme_to_ticker_snippet(m.ticker, themes)
+        lines.append(f"**節目題材：** {theme_snippet}。")
+        analysis: Optional[str] = None
+        if llm_writer:
+            try:
+                metrics_payload = {
+                    "start_price": m.start_price,
+                    "end_price": m.end_price,
+                    "total_return_pct": m.total_return_pct,
+                    "max_drawdown_pct": m.max_drawdown_pct,
+                    "volatility_3m": m.volatility_3m,
+                }
+                analysis = llm_writer.generate_per_ticker_analysis(
+                    period=period,
+                    ticker_label=m.label,
+                    ticker_id=m.ticker,
+                    theme_snippet=theme_snippet,
+                    metrics=metrics_payload,
+                    transcript_text=transcript_for_llm,
+                )
+            except Exception:
+                analysis = None
+
+        if analysis is None and llm_error_printed == 0 and llm_writer and llm_writer.last_error:
+            print(f"[LLM] Per-ticker analysis failed (first occurrence): {llm_writer.last_error}")
+            llm_error_printed = 1
+
+        if analysis:
+            lines.append(
+                f"**近{format_period_cn(period)}市場結果：** 報酬 {format_pct_abs(m.total_return_pct)}；最大回撤 {format_pct_abs(m.max_drawdown_pct)}。"
+            )
+            lines.append("")
+            lines.append("**解讀：**")
+            lines.append("")
+            lines.append(analysis)
         else:
-            lines.append("- 可能代表這段期間市場在「預期落差/估值重估」上仍偏保守，需等待下一輪驗證訊號。")
+            interpretation = _build_per_ticker_interpretation(
+                period=period,
+                theme_snippet=theme_snippet,
+                metrics=m,
+            )
+            lines.append(
+                f"**近{format_period_cn(period)}市場結果：** 報酬 {format_pct_abs(m.total_return_pct)}；最大回撤 {format_pct_abs(m.max_drawdown_pct)}。"
+            )
+            lines.append("")
+            lines.append("**解讀：**")
+            lines.append("")
+            lines.append(interpretation)
         lines.append("")
         if (output_dir / f"{m.ticker}.svg").exists():
             lines.append(f"![]({m.ticker}.svg)")
@@ -494,6 +850,8 @@ def generate_report_md(
 
 
 def main() -> None:
+    load_dotenv_if_present(SCRIPT_DIR.parent)
+
     parser = argparse.ArgumentParser(description="Generate Yahoo Finance charts and an episode report.")
     parser.add_argument("--youtube_url", type=str, default="")
     parser.add_argument("--transcript_md_path", type=str, default="")
@@ -503,6 +861,11 @@ def main() -> None:
     parser.add_argument("--episode_prefix", type=str, default="")
     parser.add_argument("--language_code", type=str, default="")
     parser.add_argument("--ticker_map_path", type=str, default="")
+    parser.add_argument("--no_llm", action="store_true", help="Disable Gemini LLM generation; use deterministic templates.")
+    parser.add_argument("--llm_model", type=str, default="", help="Gemini model name (overrides GEMINI_MODEL when provided).")
+    parser.add_argument("--llm_temperature", type=float, default=0.3)
+    parser.add_argument("--llm_max_output_tokens", type=int, default=900)
+    parser.add_argument("--llm_transcript_max_chars", type=int, default=8000)
     args = parser.parse_args()
 
     youtube_url = args.youtube_url.strip() or None
@@ -515,6 +878,9 @@ def main() -> None:
 
     if transcript_md_path is None:
         raise ValueError("transcript_md_path is required. youtube_url transcript extraction is disabled in this skill.")
+
+    # Prefer env-configured model unless user explicitly passes --llm_model.
+    llm_model_effective = args.llm_model.strip() or os.environ.get("GEMINI_MODEL") or "models/gemini-2.5-pro"
 
     # Default mapping file
     if args.ticker_map_path:
@@ -618,6 +984,11 @@ def main() -> None:
         metrics_by_ticker=metrics_by_ticker,
         period=period,
         unresolved=unresolved,
+        use_llm=(not args.no_llm) and (get_gemini_api_key() is not None),
+        llm_model=llm_model_effective,
+        llm_temperature=args.llm_temperature,
+        llm_max_output_tokens=args.llm_max_output_tokens,
+        llm_transcript_max_chars=args.llm_transcript_max_chars,
     )
 
     print(f"Report: {report_md_path}")
