@@ -1,0 +1,82 @@
+version: 1
+
+# Mapping rules from transcript text to Yahoo Finance tickers.
+# The matching pipeline is:
+# 1) normalize transcript (lowercase, remove whitespace, fix common OCR/ASR errors)
+# 2) find transcript matches against each mapping's patterns
+# 3) resolve to one or more target Yahoo tickers
+mappings:
+  NVDA:
+    patterns:
+      - "nvidia"
+      - "invidia"
+  TSM:
+    patterns:
+      - "tsm"
+      - "tsmc"
+      - "台積電"
+      - "台積"
+      - "tsmc"
+  TSLA:
+    patterns:
+      - "tesla"
+      - "tsla"
+  AAPL:
+    patterns:
+      - "apple"
+      - "aapl"
+  MSFT:
+    patterns:
+      - "microsoft"
+      - "msft"
+  ORCL:
+    patterns:
+      - "oracle"
+      - "orcl"
+  AMZN:
+    patterns:
+      - "amazon"
+      - "amzn"
+  GOOGL:
+    patterns:
+      - "google"
+      - "googl"
+      - "googlecloud"
+  AMD:
+    patterns:
+      - "amd"
+      - "超微"
+  AVGO:
+    # The episode often says "BC" / "BadC" but the transcript may be noisy.
+    patterns:
+      - "bc"
+      - "badc"
+      - "badc"
+  MU:
+    patterns:
+      - "micron"
+      - "mu"
+      - "美光"
+  2345.TW:
+    patterns:
+      - "winbond"
+      - "華邦"
+      - "華邦店"
+      - "華邦電"
+  2454.TW:
+    patterns:
+      - "mtk"
+      - "mediatek"
+      - "聯發科"
+      - "聯發"
+  005930.KS:
+    patterns:
+      - "samsung"
+      - "005930"
+      - "三星"
+
+# Optional aliases for cases where the transcript uses a shorthand.
+aliases:
+  # Helps when the transcript is broken into spaced letters.
+  nvidi a: "NVDA"
+
