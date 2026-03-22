@@ -1,0 +1,20 @@
+# Development / local-run artifacts
+.env
+.env.*
+.venv/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# Local episode data
+input/
+output/
+ep*/
+
+# Git & editor
+.git/
+.gitignore
+.cursor/
+
+# Not needed in the published package
+*.md.bak

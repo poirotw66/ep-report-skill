@@ -1,0 +1,27 @@
+{
+  "name": "ep-yf-report-skill",
+  "version": "1.0.0",
+  "description": "Cursor Agent Skill: generate SVG stock charts and a markdown report from episode transcripts via Yahoo Finance.",
+  "keywords": [
+    "cursor",
+    "cursor-skill",
+    "agent-skill",
+    "yahoo-finance",
+    "stock-chart",
+    "transcript"
+  ],
+  "homepage": "https://github.com/poirotw66/ep-report-skill",
+  "license": "MIT",
+  "bin": {
+    "ep-yf-report-skill": "./bin/cli.js"
+  },
+  "files": [
+    "bin/",
+    "scripts/",
+    "SKILL.md",
+    "reference.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}
