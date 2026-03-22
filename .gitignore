@@ -4,6 +4,7 @@ ep644.md
 ep644_new/
 ep644_new2/
 output/
+input/
 .venv/
 .env
 .gitignore

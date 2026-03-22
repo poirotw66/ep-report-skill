@@ -85,7 +85,7 @@ def _infer_output_dir(
 
 
 def _select_close_column(df: pd.DataFrame) -> str:
-    for col in ["Adj Close", "Close"]:
+    for col in ["Close", "Adj Close"]:
         if col in df.columns:
             return col
     # For some tickers, yfinance may return fewer fields.
@@ -200,11 +200,11 @@ def yfinance_download_close_series(
         # columns levels: [Ticker, Price]
         for ticker in tickers:
             # Determine close column
-            close_col = "Adj Close" if (ticker, "Adj Close") in df.columns else "Close"
+            close_col = "Close" if (ticker, "Close") in df.columns else "Adj Close"
             if (ticker, close_col) not in df.columns:
-                # Fallback: try Close
-                if (ticker, "Close") in df.columns:
-                    close_col = "Close"
+                # Fallback: try adjusted close when close is unavailable.
+                if (ticker, "Adj Close") in df.columns:
+                    close_col = "Adj Close"
                 else:
                     continue
             series = df[(ticker, close_col)].dropna()
@@ -239,6 +239,17 @@ def format_pct(x: float) -> str:
 
 def format_pct_abs(x: float) -> str:
     return f"{x:.2f}%"
+
+
+def format_narrative_score(raw_score: Optional[float]) -> str:
+    if not isinstance(raw_score, (int, float)):
+        return "?"
+
+    score = float(raw_score)
+    if 0.0 <= score <= 1.0:
+        score *= 10.0
+    score = max(0.0, min(score, 10.0))
+    return f"{score:.1f}/10"
 
 
 def _risk_band_from_max_drawdown(max_drawdown_pct: float) -> str:
@@ -620,13 +631,12 @@ def generate_report_md(
                             temporal_role = item.get("temporal_role")
                             action_plan = item.get("action_plan")
                             correlation_analysis = item.get("correlation_analysis")
-                            score_str = None
+                            score_text = "?"
                             classification = None
                             logic = None
                             if isinstance(correlation_analysis, dict):
                                 raw_score = correlation_analysis.get("score")
-                                if isinstance(raw_score, (int, float)):
-                                    score_str = f"{raw_score}"
+                                score_text = format_narrative_score(raw_score)
                                 classification = correlation_analysis.get("classification")
                                 logic = correlation_analysis.get("logic")
 
@@ -634,7 +644,7 @@ def generate_report_md(
                                 lines.append("")
                                 lines.append(f"**{name.strip()}**")
                                 lines.append(
-                                    f"敘事得分：{score_str or '?'}（{classification or '—'}）；時序角色：{temporal_role.strip()}"
+                                    f"敘事評價：{score_text}（{classification or '—'}）；時序角色：{temporal_role.strip()}"
                                 )
                                 if isinstance(action_plan, str) and action_plan.strip():
                                     lines.append(f"操作建議：{action_plan.strip()}")
@@ -678,7 +688,7 @@ def generate_report_md(
 
     lines.append("## Market overview")
     lines.append("")
-    lines.append("| 標的 | 近期間報酬 | 最大回撤 | 起點價 | 期末價 | 波動（每日報酬標準差, %） |")
+    lines.append("| 標的 | 近期間報酬 | 最大回撤 | 起點價 | 最後收盤價 | 波動（每日報酬標準差, %） |")
     lines.append("|---|---:|---:|---:|---:|---:|")
     for m in sorted_metrics:
         lines.append(
@@ -748,14 +758,14 @@ def generate_report_md(
                             classification = correlation_analysis.get("classification")
                             logic = correlation_analysis.get("logic")
                         if isinstance(name, str) and name.strip() and isinstance(temporal_role, str) and temporal_role.strip():
-                            score_text = f"{score_val:.2f}" if isinstance(score_val, float) else "?"
+                            score_text = format_narrative_score(score_val)
                             cls_text = classification.strip() if isinstance(classification, str) and classification.strip() else "—"
                             action_text = action_plan.strip() if isinstance(action_plan, str) and action_plan.strip() else ""
                             logic_text = logic.strip() if isinstance(logic, str) and logic.strip() else ""
                             lines.append("")
                             lines.append(f"**{name.strip()}**")
                             lines.append(
-                                f"敘事得分：{score_text}（{cls_text}）；時序角色：{temporal_role.strip()}"
+                                f"敘事評價：{score_text}（{cls_text}）；時序角色：{temporal_role.strip()}"
                             )
                             if action_text:
                                 lines.append(f"操作建議：{action_text}")
